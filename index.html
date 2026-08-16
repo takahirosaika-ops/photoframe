@@ -102,7 +102,9 @@
   }
   .idle-btn.show{opacity:0.9;}
   #gear{right:20px;}
-  #pauseBtn{right:76px;font-size:18px;}
+  #nextBtn{right:76px;}
+  #pauseBtn{right:132px;font-size:18px;}
+  #prevBtn{right:188px;}
 
   #fsHint{
     position:fixed;inset:0;
@@ -185,7 +187,9 @@
   <div class="shot-place" id="capPlace"></div>
 </div>
 
+<div id="prevBtn" class="idle-btn">‹</div>
 <div id="pauseBtn" class="idle-btn">⏸</div>
+<div id="nextBtn" class="idle-btn">›</div>
 <div id="gear" class="idle-btn">⚙</div>
 
 <div id="fsHint"><span>画面をタップすると全画面表示になります</span></div>
@@ -342,6 +346,8 @@
     settings: document.getElementById("settingsScreen"),
     gear: document.getElementById("gear"),
     pauseBtn: document.getElementById("pauseBtn"),
+    prevBtn: document.getElementById("prevBtn"),
+    nextBtn: document.getElementById("nextBtn"),
     statusMsg: document.getElementById("status-msg"),
     statusText: document.getElementById("status-text"),
     statusAction: document.getElementById("status-action"),
@@ -818,6 +824,8 @@
 
     els.gear.addEventListener("click", openSettings);
     els.pauseBtn.addEventListener("click", togglePause);
+    els.prevBtn.addEventListener("click", ()=>{ stepPrev(); revealControls(); });
+    els.nextBtn.addEventListener("click", ()=>{ stepNext(); revealControls(); });
   }
   function revealControls(){
     document.querySelectorAll(".idle-btn").forEach(b=>b.classList.add("show"));
