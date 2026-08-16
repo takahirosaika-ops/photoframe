@@ -397,6 +397,7 @@
     setupIdleControls();
     wireSegments();
     setupWakeLock();
+    setupKeepAliveVideo();
     setTimeout(()=>location.reload(), RELOAD_HOURS_MS);
 
     if(!hasConfig()){
@@ -418,19 +419,60 @@
     el.style.opacity = inNight ? (cfg.nightLevel || 0.6) : 0;
   }
 
-  // 画面が暗くなる/スリープするのを防ぐ(Android側の「充電中はスリープしない」設定が
-  // 満充電時に効かなくなることがあるため、アプリ側からも保持する)
+  // 画面が暗くなる/スリープするのを防ぐ。
+  // ①Wake Lock API ②動画再生による保持 の二段構えにする。
+  // (古いFire OSのSilkはWake Lock未対応のことがあり、その場合は②が効く)
   let wakeLock = null;
-  async function setupWakeLock(){
+  async function acquireWakeLock(){
     if(!("wakeLock" in navigator)) return;
+    if(wakeLock) return;
     try{
       wakeLock = await navigator.wakeLock.request("screen");
-    }catch(e){ /* 非対応環境などは無視して他の対策に任せる */ }
-    document.addEventListener("visibilitychange", async ()=>{
-      if(wakeLock === null && document.visibilityState === "visible"){
-        try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
-      }
+      // OS側に解放されたら再取得できるよう、必ずnullに戻す
+      wakeLock.addEventListener("release", ()=>{ wakeLock = null; });
+    }catch(e){ wakeLock = null; }
+  }
+  async function setupWakeLock(){
+    acquireWakeLock();
+    // 解放されっぱなしにならないよう定期的に取り直す
+    setInterval(acquireWakeLock, 60000);
+    document.addEventListener("visibilitychange", ()=>{
+      if(document.visibilityState === "visible") acquireWakeLock();
     });
+  }
+
+  // フォールバック：極小の動画を無音ループ再生する。
+  // ブラウザは「動画再生中」の間は画面を明るく保つため、輝度低下も防げる。
+  let keepAliveVideo = null;
+  function setupKeepAliveVideo(){
+    if(keepAliveVideo) return;
+    try{
+      const canvas = document.createElement("canvas");
+      canvas.width = 4; canvas.height = 4;
+      const ctx = canvas.getContext("2d");
+      const paint = ()=>{
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, 4, 4);
+      };
+      paint();
+      if(!canvas.captureStream) return;
+      const stream = canvas.captureStream(5);
+      setInterval(paint, 1000);   // 映像が途切れると再生が止まるため描き続ける
+
+      const v = document.createElement("video");
+      v.muted = true;
+      v.defaultMuted = true;
+      v.loop = true;
+      v.setAttribute("playsinline", "");
+      v.setAttribute("muted", "");
+      v.style.cssText = "position:fixed;left:0;bottom:0;width:6px;height:6px;" +
+                        "opacity:0.02;pointer-events:none;z-index:1;";
+      v.srcObject = stream;
+      document.body.appendChild(v);
+      const p = v.play();
+      if(p && p.catch) p.catch(()=>{});
+      keepAliveVideo = v;
+    }catch(e){ /* 非対応環境では何もしない */ }
   }
 
   function waitForGIS(cb){
@@ -721,6 +763,9 @@
         document.documentElement.requestFullscreen().catch(()=>{});
       }
       if(fsHint) fsHint.classList.add("hidden");
+      // 自動再生が制限される環境でも、タップ後なら確実に開始できる
+      setupKeepAliveVideo();
+      acquireWakeLock();
       revealGear();
     }, {once:false});
     els.gear.addEventListener("click", openSettings);
