@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a0908">
+<meta name="mobile-web-app-capable" content="yes">
 <title>フォトフレーム</title>
 <style>
   :root{
@@ -56,8 +59,8 @@
     font-weight:300;letter-spacing:1px;
     opacity:0.85;pointer-events:none;
   }
-  #clock .time{font-size:34px;line-height:1;}
-  #clock .date{font-size:14px;margin-top:4px;color:var(--ink-dim);}
+  #clock .time{font-size:46px;line-height:1;}
+  #clock .date{font-size:19px;margin-top:6px;color:var(--ink-dim);}
 
   #caption{
     position:fixed;right:32px;bottom:26px;
@@ -68,8 +71,18 @@
     opacity:0;transition:opacity 1.2s ease;
   }
   #caption.visible{opacity:0.92;}
-  #caption .shot-date{font-size:19px;font-weight:400;letter-spacing:0.5px;line-height:1.3;}
-  #caption .shot-place{font-size:14px;color:var(--ink-dim);margin-top:5px;line-height:1.4;}
+  #caption .shot-date{font-size:40px;font-weight:400;letter-spacing:0.5px;line-height:1.25;}
+  #caption .shot-place{font-size:22px;color:var(--ink-dim);margin-top:8px;line-height:1.4;}
+
+  /* 夜間の減光レイヤー。ゆっくり変化させて唐突さをなくす */
+  #nightDim{
+    position:fixed;inset:0;
+    background:#000;
+    opacity:0;
+    transition:opacity 8s ease;
+    pointer-events:none;
+    z-index:40;
+  }
 
   #status-msg{
     position:fixed;inset:0;display:none;
@@ -88,6 +101,24 @@
     opacity:0;transition:opacity 0.35s ease;z-index:50;
   }
   #gear.show{opacity:0.9;}
+
+  #fsHint{
+    position:fixed;inset:0;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(0,0,0,0.55);
+    color:var(--ink);
+    font-size:16px;letter-spacing:0.5px;
+    text-align:center;padding:30px;
+    z-index:80;
+    opacity:1;transition:opacity 0.5s ease;
+    pointer-events:none;
+  }
+  #fsHint.hidden{opacity:0;}
+  #fsHint span{
+    border:1px solid var(--frame);
+    padding:14px 26px;
+    background:rgba(10,9,8,0.6);
+  }
 
   .screen{
     position:fixed;inset:0;
@@ -119,6 +150,8 @@
   .seg{display:flex;gap:8px;margin-top:6px;}
   .seg button{flex:1;padding:9px 0;font-size:13px;}
   .seg button.on{background:var(--frame);color:#1a1208;font-weight:600;}
+  .time-row{display:flex;gap:12px;}
+  .time-row > div{flex:1;}
   .btn-row{display:flex;gap:10px;margin-top:26px;}
   button{
     font-family:inherit;font-size:14px;padding:11px 18px;border-radius:2px;
@@ -141,6 +174,8 @@
 
 <div id="bottomScrim"></div>
 
+<div id="nightDim"></div>
+
 <div id="clock"><div class="time" id="clockTime"></div><div class="date" id="clockDate"></div></div>
 
 <div id="caption">
@@ -149,6 +184,8 @@
 </div>
 
 <div id="gear">⚙</div>
+
+<div id="fsHint"><span>画面をタップすると全画面表示になります</span></div>
 
 <div id="status-msg">
   <div id="status-text"></div>
@@ -184,6 +221,26 @@
       <input type="checkbox" id="inBlur">
       <label for="inBlur" style="margin:0;">余白をぼかし背景で埋める(重くなります)</label>
     </div>
+    <div class="check-row">
+      <input type="checkbox" id="inNight" checked>
+      <label for="inNight" style="margin:0;">夜間は画面を暗くする</label>
+    </div>
+    <div class="time-row">
+      <div>
+        <label style="margin-top:8px;">暗くする開始</label>
+        <input type="number" id="inNightStart" value="22" min="0" max="23">
+      </div>
+      <div>
+        <label style="margin-top:8px;">明るく戻す</label>
+        <input type="number" id="inNightEnd" value="6" min="0" max="23">
+      </div>
+    </div>
+    <label>暗さ</label>
+    <div class="seg" id="inNightLevelSeg">
+      <button data-order="0.35">弱</button>
+      <button data-order="0.6" class="on">中</button>
+      <button data-order="0.82">強</button>
+    </div>
     <div class="btn-row">
       <button class="primary" id="setupSave">保存してはじめる</button>
     </div>
@@ -218,6 +275,26 @@
     <div class="check-row">
       <input type="checkbox" id="setBlur">
       <label for="setBlur" style="margin:0;">余白をぼかし背景で埋める(重くなります)</label>
+    </div>
+    <div class="check-row">
+      <input type="checkbox" id="setNight">
+      <label for="setNight" style="margin:0;">夜間は画面を暗くする</label>
+    </div>
+    <div class="time-row">
+      <div>
+        <label style="margin-top:8px;">暗くする開始</label>
+        <input type="number" id="setNightStart" min="0" max="23">
+      </div>
+      <div>
+        <label style="margin-top:8px;">明るく戻す</label>
+        <input type="number" id="setNightEnd" min="0" max="23">
+      </div>
+    </div>
+    <label>暗さ</label>
+    <div class="seg" id="setNightLevelSeg">
+      <button data-order="0.35">弱</button>
+      <button data-order="0.6">中</button>
+      <button data-order="0.82">強</button>
     </div>
     <div class="btn-row">
       <button class="primary" id="settingsSave">保存</button>
@@ -276,13 +353,21 @@
       if(!c.size) c.size = 1600;
       if(typeof c.geo !== "boolean") c.geo = true;
       if(typeof c.blur !== "boolean") c.blur = false;
+      if(typeof c.night !== "boolean") c.night = true;
+      if(typeof c.nightStart !== "number") c.nightStart = 22;
+      if(typeof c.nightEnd !== "number") c.nightEnd = 6;
+      if(typeof c.nightLevel !== "number") c.nightLevel = 0.6;
       return c;
-    }catch(e){ return {order:"chrono", size:1600, geo:true, blur:false}; }
+    }catch(e){
+      return {order:"chrono", size:1600, geo:true, blur:false,
+              night:true, nightStart:22, nightEnd:6, nightLevel:0.6};
+    }
   }
   function saveConfig(c){
     cfg = c;
     localStorage.setItem("photoframe.config", JSON.stringify(c));
     applyBlurMode();
+    applyNightDim();
   }
   function applyBlurMode(){
     document.body.classList.toggle("blur-on", !!cfg.blur);
@@ -305,10 +390,13 @@
 
   function boot(){
     applyBlurMode();
+    applyNightDim();
+    setInterval(applyNightDim, 60000);
     updateClock();
     setInterval(updateClock, 30000);
     setupIdleControls();
     wireSegments();
+    setupWakeLock();
     setTimeout(()=>location.reload(), RELOAD_HOURS_MS);
 
     if(!hasConfig()){
@@ -317,6 +405,32 @@
     }
     els.setup.classList.add("hidden");
     waitForGIS(initAuth);
+  }
+
+  // 夜間の減光。日をまたぐ指定(22時→6時)にも対応する
+  function applyNightDim(){
+    const el = document.getElementById("nightDim");
+    if(!el) return;
+    if(!cfg.night){ el.style.opacity = 0; return; }
+    const h = new Date().getHours();
+    const s = cfg.nightStart, e = cfg.nightEnd;
+    const inNight = (s < e) ? (h >= s && h < e) : (h >= s || h < e);
+    el.style.opacity = inNight ? (cfg.nightLevel || 0.6) : 0;
+  }
+
+  // 画面が暗くなる/スリープするのを防ぐ(Android側の「充電中はスリープしない」設定が
+  // 満充電時に効かなくなることがあるため、アプリ側からも保持する)
+  let wakeLock = null;
+  async function setupWakeLock(){
+    if(!("wakeLock" in navigator)) return;
+    try{
+      wakeLock = await navigator.wakeLock.request("screen");
+    }catch(e){ /* 非対応環境などは無視して他の対策に任せる */ }
+    document.addEventListener("visibilitychange", async ()=>{
+      if(wakeLock === null && document.visibilityState === "visible"){
+        try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+      }
+    });
   }
 
   function waitForGIS(cb){
@@ -597,12 +711,18 @@
   }
 
   function setupIdleControls(){
+    const fsHint = document.getElementById("fsHint");
+    // 既にホーム画面から起動していて(standalone表示)アドレスバーが無い場合はヒント不要
+    const alreadyStandalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+    if(alreadyStandalone && fsHint) fsHint.classList.add("hidden");
+
     document.addEventListener("pointerdown", ()=>{
       if(document.documentElement.requestFullscreen && !document.fullscreenElement){
         document.documentElement.requestFullscreen().catch(()=>{});
       }
+      if(fsHint) fsHint.classList.add("hidden");
       revealGear();
-    });
+    }, {once:false});
     els.gear.addEventListener("click", openSettings);
   }
   function revealGear(){
@@ -639,11 +759,22 @@
     const size = parseInt(readSeg("inSizeSeg"), 10) || 1600;
     const geo = document.getElementById("inGeo").checked;
     const blur = document.getElementById("inBlur").checked;
+    const night = document.getElementById("inNight").checked;
+    const nightStart = clampHour(document.getElementById("inNightStart").value, 22);
+    const nightEnd = clampHour(document.getElementById("inNightEnd").value, 6);
+    const nightLevel = parseFloat(readSeg("inNightLevelSeg")) || 0.6;
     if(!clientId || !folderId) return;
-    saveConfig({clientId, folderId, interval, order, size, geo, blur});
+    saveConfig({clientId, folderId, interval, order, size, geo, blur,
+                night, nightStart, nightEnd, nightLevel});
     els.setup.classList.add("hidden");
     waitForGIS(initAuth);
   });
+
+  function clampHour(v, fallback){
+    const n = parseInt(v, 10);
+    if(isNaN(n) || n < 0 || n > 23) return fallback;
+    return n;
+  }
 
   function openSettings(){
     document.getElementById("setClientId").value = cfg.clientId || "";
@@ -651,6 +782,10 @@
     document.getElementById("setInterval").value = cfg.interval || 12;
     document.getElementById("setGeo").checked = !!cfg.geo;
     document.getElementById("setBlur").checked = !!cfg.blur;
+    document.getElementById("setNight").checked = !!cfg.night;
+    document.getElementById("setNightStart").value = cfg.nightStart;
+    document.getElementById("setNightEnd").value = cfg.nightEnd;
+    writeSeg("setNightLevelSeg", cfg.nightLevel);
     writeSeg("setOrderSeg", cfg.order || "chrono");
     writeSeg("setSizeSeg", cfg.size || 1600);
     els.settings.classList.remove("hidden");
@@ -666,8 +801,13 @@
     const size = parseInt(readSeg("setSizeSeg"), 10) || 1600;
     const geo = document.getElementById("setGeo").checked;
     const blur = document.getElementById("setBlur").checked;
+    const night = document.getElementById("setNight").checked;
+    const nightStart = clampHour(document.getElementById("setNightStart").value, 22);
+    const nightEnd = clampHour(document.getElementById("setNightEnd").value, 6);
+    const nightLevel = parseFloat(readSeg("setNightLevelSeg")) || 0.6;
     const needsReload = (clientId !== cfg.clientId) || (folderId !== cfg.folderId) || (order !== cfg.order);
-    saveConfig({clientId, folderId, interval, order, size, geo, blur});
+    saveConfig({clientId, folderId, interval, order, size, geo, blur,
+                night, nightStart, nightEnd, nightLevel});
     els.settings.classList.add("hidden");
     if(needsReload) location.reload();
   });
