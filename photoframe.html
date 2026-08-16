@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>フォトフレーム</title>
+<style>
+  :root{
+    --ink:#f4ede1;
+    --ink-dim:#c9bfa8;
+    --frame:#b8925a;
+    --bg:#0a0908;
+    --panel:#151210;
+    --panel-line:#2a241d;
+    --danger:#c96a4a;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;padding:0;width:100%;height:100%;
+    background:#000;
+    overflow:hidden;
+    font-family:-apple-system,"Hiragino Sans","Yu Gothic",sans-serif;
+    -webkit-user-select:none;user-select:none;
+  }
+
+  #slideshow{position:fixed;inset:0;background:#000;}
+  .layer{
+    position:absolute;inset:0;
+    opacity:0;
+    transition:opacity 1.2s ease;
+  }
+  .layer.visible{opacity:1;}
+  .layer .bg{
+    position:absolute;inset:0;
+    background-size:cover;background-position:center;
+    filter:blur(30px) brightness(0.4);
+    transform:scale(1.15);
+    display:none;             /* 既定は無効。軽量優先 */
+  }
+  body.blur-on .layer .bg{display:block;}
+  .layer .fg{
+    position:absolute;inset:0;
+    background-size:contain;background-position:center;background-repeat:no-repeat;
+  }
+
+  #bottomScrim{
+    position:fixed;left:0;right:0;bottom:0;height:170px;
+    background:linear-gradient(to top, rgba(0,0,0,0.6), rgba(0,0,0,0));
+    pointer-events:none;
+  }
+
+  #clock{
+    position:fixed;left:32px;bottom:26px;
+    color:var(--ink);
+    text-shadow:0 2px 10px rgba(0,0,0,0.8);
+    font-weight:300;letter-spacing:1px;
+    opacity:0.85;pointer-events:none;
+  }
+  #clock .time{font-size:34px;line-height:1;}
+  #clock .date{font-size:14px;margin-top:4px;color:var(--ink-dim);}
+
+  #caption{
+    position:fixed;right:32px;bottom:26px;
+    max-width:52vw;text-align:right;
+    color:var(--ink);
+    text-shadow:0 2px 10px rgba(0,0,0,0.8);
+    pointer-events:none;
+    opacity:0;transition:opacity 1.2s ease;
+  }
+  #caption.visible{opacity:0.92;}
+  #caption .shot-date{font-size:19px;font-weight:400;letter-spacing:0.5px;line-height:1.3;}
+  #caption .shot-place{font-size:14px;color:var(--ink-dim);margin-top:5px;line-height:1.4;}
+
+  #status-msg{
+    position:fixed;inset:0;display:none;
+    align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;
+    color:var(--ink);text-align:center;padding:40px;
+    background:rgba(0,0,0,0.6);z-index:60;
+  }
+
+  #gear{
+    position:fixed;top:20px;right:20px;
+    width:44px;height:44px;border-radius:50%;
+    background:rgba(0,0,0,0.45);color:var(--ink);
+    display:flex;align-items:center;justify-content:center;
+    font-size:20px;cursor:pointer;
+    opacity:0;transition:opacity 0.35s ease;z-index:50;
+  }
+  #gear.show{opacity:0.9;}
+
+  .screen{
+    position:fixed;inset:0;
+    display:flex;align-items:center;justify-content:center;
+    background:var(--bg);z-index:100;
+    overflow-y:auto;padding:20px 0;
+  }
+  .card{
+    width:min(430px,88vw);
+    background:var(--panel);
+    border:1px solid var(--panel-line);
+    padding:36px 32px 30px;position:relative;margin:auto;
+  }
+  .card::before{
+    content:"";position:absolute;inset:10px;
+    border:1px solid var(--frame);opacity:0.35;pointer-events:none;
+  }
+  .card h1{margin:0 0 6px;color:var(--ink);font-size:22px;font-weight:500;letter-spacing:0.5px;}
+  .card p{margin:0 0 22px;color:var(--ink-dim);font-size:13px;line-height:1.7;}
+  .card label{display:block;color:var(--ink-dim);font-size:12px;margin:16px 0 6px;letter-spacing:0.3px;}
+  .card input[type=text],.card input[type=number]{
+    width:100%;padding:10px 12px;background:#0e0c0a;
+    border:1px solid var(--panel-line);color:var(--ink);
+    font-size:14px;border-radius:2px;
+  }
+  .card input:focus{outline:none;border-color:var(--frame);}
+  .check-row{display:flex;align-items:center;gap:9px;margin:14px 0 0;color:var(--ink-dim);font-size:13px;}
+  .check-row input{width:17px;height:17px;accent-color:var(--frame);}
+  .seg{display:flex;gap:8px;margin-top:6px;}
+  .seg button{flex:1;padding:9px 0;font-size:13px;}
+  .seg button.on{background:var(--frame);color:#1a1208;font-weight:600;}
+  .btn-row{display:flex;gap:10px;margin-top:26px;}
+  button{
+    font-family:inherit;font-size:14px;padding:11px 18px;border-radius:2px;
+    border:1px solid var(--frame);background:transparent;color:var(--ink);
+    cursor:pointer;letter-spacing:0.3px;
+  }
+  button.primary{background:var(--frame);color:#1a1208;font-weight:600;}
+  button.ghost{border-color:var(--panel-line);color:var(--ink-dim);}
+  button.danger{border-color:var(--danger);color:var(--danger);}
+  .small{font-size:11px;color:var(--ink-dim);margin-top:22px;line-height:1.6;}
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+
+<div id="slideshow">
+  <div class="layer" id="layerA"><div class="bg"></div><div class="fg"></div></div>
+  <div class="layer" id="layerB"><div class="bg"></div><div class="fg"></div></div>
+</div>
+
+<div id="bottomScrim"></div>
+
+<div id="clock"><div class="time" id="clockTime"></div><div class="date" id="clockDate"></div></div>
+
+<div id="caption">
+  <div class="shot-date" id="capDate"></div>
+  <div class="shot-place" id="capPlace"></div>
+</div>
+
+<div id="gear">⚙</div>
+
+<div id="status-msg">
+  <div id="status-text"></div>
+  <button class="primary" id="status-action" style="display:none;"></button>
+</div>
+
+<div class="screen" id="setupScreen">
+  <div class="card">
+    <h1>フォトフレームを設定</h1>
+    <p>Googleドライブのフォルダから写真を読み込み、撮影日順に表示します。画像は自動で縮小して受け取るので、古い端末でも落ちにくい作りです。</p>
+    <label>Google OAuth クライアントID</label>
+    <input type="text" id="inClientId" placeholder="xxxxxxxx.apps.googleusercontent.com">
+    <label>写真フォルダのID</label>
+    <input type="text" id="inFolderId" placeholder="DriveフォルダURLの末尾の文字列">
+    <label>1枚あたりの表示秒数</label>
+    <input type="number" id="inInterval" value="12" min="3">
+    <label>並び順</label>
+    <div class="seg" id="inOrderSeg">
+      <button data-order="chrono" class="on">撮影日順</button>
+      <button data-order="shuffle">シャッフル</button>
+    </div>
+    <label>画質(端末が重い・落ちる場合は下げる)</label>
+    <div class="seg" id="inSizeSeg">
+      <button data-order="1024">軽い</button>
+      <button data-order="1600" class="on">標準</button>
+      <button data-order="2048">高画質</button>
+    </div>
+    <div class="check-row">
+      <input type="checkbox" id="inGeo" checked>
+      <label for="inGeo" style="margin:0;">撮影場所の地名を表示する</label>
+    </div>
+    <div class="check-row">
+      <input type="checkbox" id="inBlur">
+      <label for="inBlur" style="margin:0;">余白をぼかし背景で埋める(重くなります)</label>
+    </div>
+    <div class="btn-row">
+      <button class="primary" id="setupSave">保存してはじめる</button>
+    </div>
+    <div class="small">設定内容はこの端末のブラウザ内にのみ保存されます。</div>
+  </div>
+</div>
+
+<div class="screen hidden" id="settingsScreen">
+  <div class="card">
+    <h1>設定</h1>
+    <label>Google OAuth クライアントID</label>
+    <input type="text" id="setClientId">
+    <label>写真フォルダのID</label>
+    <input type="text" id="setFolderId">
+    <label>1枚あたりの表示秒数</label>
+    <input type="number" id="setInterval" min="3">
+    <label>並び順</label>
+    <div class="seg" id="setOrderSeg">
+      <button data-order="chrono">撮影日順</button>
+      <button data-order="shuffle">シャッフル</button>
+    </div>
+    <label>画質(端末が重い・落ちる場合は下げる)</label>
+    <div class="seg" id="setSizeSeg">
+      <button data-order="1024">軽い</button>
+      <button data-order="1600">標準</button>
+      <button data-order="2048">高画質</button>
+    </div>
+    <div class="check-row">
+      <input type="checkbox" id="setGeo">
+      <label for="setGeo" style="margin:0;">撮影場所の地名を表示する</label>
+    </div>
+    <div class="check-row">
+      <input type="checkbox" id="setBlur">
+      <label for="setBlur" style="margin:0;">余白をぼかし背景で埋める(重くなります)</label>
+    </div>
+    <div class="btn-row">
+      <button class="primary" id="settingsSave">保存</button>
+      <button class="ghost" id="settingsClose">閉じる</button>
+    </div>
+    <div class="btn-row">
+      <button class="ghost" id="settingsRestart">先頭から見直す</button>
+      <button class="danger" id="settingsSignout">サインアウト</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+(function(){
+  "use strict";
+
+  const SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+  const SILENT_REFRESH_MS = 45 * 60 * 1000;
+  const FOLDER_RESCAN_MS  = 20 * 60 * 1000;
+  const RELOAD_HOURS_MS   = 6 * 60 * 60 * 1000;  // 長時間放置でのメモリ肥大対策
+  const TRANSITION_MS = 1200;
+  const GEO_MIN_GAP_MS = 1500;
+
+  let cfg = loadConfig();
+  let tokenClient = null;
+  let accessToken = null;
+  let photos = [];
+  let queue = [];
+  let queuePos = 0;
+  let currentLayer = "A";
+  let nextTimer = null;
+  let idleHideTimer = null;
+  let lastGeoAt = 0;
+  let started = false;
+  let preloader = null;
+
+  const els = {
+    setup: document.getElementById("setupScreen"),
+    settings: document.getElementById("settingsScreen"),
+    gear: document.getElementById("gear"),
+    statusMsg: document.getElementById("status-msg"),
+    statusText: document.getElementById("status-text"),
+    statusAction: document.getElementById("status-action"),
+    clockTime: document.getElementById("clockTime"),
+    clockDate: document.getElementById("clockDate"),
+    caption: document.getElementById("caption"),
+    capDate: document.getElementById("capDate"),
+    capPlace: document.getElementById("capPlace"),
+  };
+
+  function loadConfig(){
+    try{
+      const c = JSON.parse(localStorage.getItem("photoframe.config") || "null") || {};
+      if(!c.order) c.order = "chrono";
+      if(!c.size) c.size = 1600;
+      if(typeof c.geo !== "boolean") c.geo = true;
+      if(typeof c.blur !== "boolean") c.blur = false;
+      return c;
+    }catch(e){ return {order:"chrono", size:1600, geo:true, blur:false}; }
+  }
+  function saveConfig(c){
+    cfg = c;
+    localStorage.setItem("photoframe.config", JSON.stringify(c));
+    applyBlurMode();
+  }
+  function applyBlurMode(){
+    document.body.classList.toggle("blur-on", !!cfg.blur);
+  }
+  function hasConfig(){ return !!(cfg.clientId && cfg.folderId); }
+
+  function savePosition(){
+    if(cfg.order !== "chrono") return;
+    const cur = queue[queuePos - 1];
+    if(cur === undefined || !photos[cur]) return;
+    localStorage.setItem("photoframe.lastId", photos[cur].id);
+  }
+  function restorePosition(){
+    if(cfg.order !== "chrono") return;
+    const lastId = localStorage.getItem("photoframe.lastId");
+    if(!lastId) return;
+    const idx = photos.findIndex(p => p.id === lastId);
+    if(idx >= 0) queuePos = idx + 1;
+  }
+
+  function boot(){
+    applyBlurMode();
+    updateClock();
+    setInterval(updateClock, 30000);
+    setupIdleControls();
+    wireSegments();
+    setTimeout(()=>location.reload(), RELOAD_HOURS_MS);
+
+    if(!hasConfig()){
+      els.setup.classList.remove("hidden");
+      return;
+    }
+    els.setup.classList.add("hidden");
+    waitForGIS(initAuth);
+  }
+
+  function waitForGIS(cb){
+    if(window.google && google.accounts && google.accounts.oauth2){ cb(); }
+    else{ setTimeout(()=>waitForGIS(cb), 150); }
+  }
+
+  function initAuth(){
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: cfg.clientId,
+      scope: SCOPE,
+      callback: (resp)=>{
+        if(resp && resp.access_token){
+          accessToken = resp.access_token;
+          hideStatus();
+          startSlideshow();
+        }else{
+          showStatus("Googleへのサインインに失敗しました。", "もう一度試す", ()=>requestToken(""));
+        }
+      },
+      error_callback: ()=>{
+        showStatus("サインインが必要です。", "サインインする", ()=>requestToken(""));
+      }
+    });
+    requestToken("");
+    setInterval(()=>requestToken(""), SILENT_REFRESH_MS);
+  }
+  function requestToken(prompt){
+    try{ tokenClient.requestAccessToken({prompt: prompt}); }catch(e){}
+  }
+
+  // ---------------- Drive ----------------
+  async function fetchAllFiles(){
+    const q = encodeURIComponent(
+      "'" + cfg.folderId + "' in parents and mimeType contains 'image/' and trashed = false"
+    );
+    const fields = encodeURIComponent(
+      "nextPageToken,files(id,name,createdTime,modifiedTime,thumbnailLink,hasThumbnail," +
+      "imageMediaMetadata(time,location))"
+    );
+    let all = [];
+    let pageToken = "";
+    do{
+      let url = "https://www.googleapis.com/drive/v3/files?q=" + q +
+                "&fields=" + fields + "&pageSize=1000";
+      if(pageToken) url += "&pageToken=" + encodeURIComponent(pageToken);
+      const res = await fetch(url, { headers:{ Authorization: "Bearer " + accessToken }});
+      if(!res.ok) throw new Error("drive_list_" + res.status);
+      const data = await res.json();
+      all = all.concat(data.files || []);
+      pageToken = data.nextPageToken || "";
+    } while(pageToken);
+    return all;
+  }
+
+  // 縮小画像のURLを組み立てる。原寸を端末に読ませないのが要点。
+  function sizedUrl(photo){
+    if(!photo.thumb) return null;
+    return photo.thumb.replace(/=s\d+(-[a-z]+)?$/i, "=s" + (cfg.size || 1600));
+  }
+
+  function parseExifTime(s){
+    if(!s) return null;
+    const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
+    if(!m) return null;
+    const d = new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function normalize(files){
+    return files.filter(f => f.hasThumbnail !== false && f.thumbnailLink)
+      .map(f => {
+        const meta = f.imageMediaMetadata || {};
+        const exif = parseExifTime(meta.time);
+        const fallback = new Date(f.createdTime || f.modifiedTime || 0);
+        const loc = meta.location;
+        return {
+          id: f.id,
+          name: f.name,
+          thumb: f.thumbnailLink,
+          date: exif || fallback,
+          dateIsExif: !!exif,
+          lat: loc && typeof loc.latitude === "number" ? loc.latitude : null,
+          lng: loc && typeof loc.longitude === "number" ? loc.longitude : null,
+        };
+      }).sort((a,b) => a.date - b.date);
+  }
+
+  function shuffle(arr){
+    const a = arr.slice();
+    for(let i=a.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+    return a;
+  }
+  function buildQueue(){
+    const idx = photos.map((_,i)=>i);
+    queue = (cfg.order === "shuffle") ? shuffle(idx) : idx;
+    queuePos = 0;
+  }
+
+  // ---------------- スライドショー ----------------
+  async function startSlideshow(){
+    if(started) return;
+    let files;
+    try{ files = await fetchAllFiles(); }
+    catch(e){ return handleFetchError(e); }
+
+    const list = normalize(files);
+    if(list.length === 0){
+      return showStatus("表示できる写真が見つかりませんでした。", "再確認する",
+        ()=>{hideStatus(); started=false; startSlideshow();});
+    }
+    started = true;
+    photos = list;
+    buildQueue();
+    restorePosition();
+    showNext();
+    setInterval(rescanFolder, FOLDER_RESCAN_MS);
+  }
+
+  async function rescanFolder(){
+    try{
+      const fresh = normalize(await fetchAllFiles());
+      if(fresh.length === 0) return;
+      const curId = (photos[queue[queuePos-1]] || {}).id;
+      photos = fresh;
+      if(cfg.order === "shuffle"){
+        buildQueue();
+      }else{
+        queue = photos.map((_,i)=>i);
+        const idx = photos.findIndex(p=>p.id === curId);
+        queuePos = idx >= 0 ? idx + 1 : Math.min(queuePos, photos.length);
+      }
+    }catch(e){}
+  }
+
+  function showNext(){
+    if(photos.length === 0) return;
+    if(queuePos >= queue.length){
+      queuePos = 0;
+      if(cfg.order === "shuffle") buildQueue();
+    }
+    const index = queue[queuePos];
+    queuePos++;
+    const meta = photos[index];
+    const url = sizedUrl(meta);
+
+    clearTimeout(nextTimer);
+    nextTimer = setTimeout(showNext, (cfg.interval || 12) * 1000);
+
+    if(!url) return;
+
+    // 読み込み完了してから差し替える(黒画面のちらつき防止)
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = ()=>{ render(url, meta); preloadNext(); };
+    img.onerror = ()=>{ preloadNext(); };  // 1枚失敗しても止めない
+    img.src = url;
+
+    savePosition();
+  }
+
+  function preloadNext(){
+    let pos = queuePos;
+    if(pos >= queue.length) pos = 0;
+    const nIndex = queue[pos];
+    if(nIndex === undefined) return;
+    const url = sizedUrl(photos[nIndex]);
+    if(!url) return;
+    preloader = new Image();       // 1枚だけ保持。参照を上書きして解放を促す
+    preloader.decoding = "async";
+    preloader.src = url;
+  }
+
+  function render(url, meta){
+    const showing = document.getElementById("layer" + currentLayer);
+    const otherLayer = currentLayer === "A" ? "B" : "A";
+    const incoming = document.getElementById("layer" + otherLayer);
+
+    if(cfg.blur){
+      incoming.querySelector(".bg").style.backgroundImage = "url(" + url + ")";
+    }
+    incoming.querySelector(".fg").style.backgroundImage = "url(" + url + ")";
+
+    incoming.classList.add("visible");
+    showing.classList.remove("visible");
+
+    // 隠れた側の画像参照を捨ててメモリを戻す
+    setTimeout(()=>{
+      showing.querySelector(".fg").style.backgroundImage = "";
+      showing.querySelector(".bg").style.backgroundImage = "";
+    }, TRANSITION_MS + 200);
+
+    currentLayer = otherLayer;
+    updateCaption(meta);
+  }
+
+  function handleFetchError(e){
+    const msg = String((e && e.message) || e);
+    if(msg.indexOf("401") !== -1 || msg.indexOf("403") !== -1){
+      showStatus("Googleの認証が切れました。", "サインインし直す", ()=>{ hideStatus(); requestToken(""); });
+    }else{
+      showStatus("読み込みに失敗しました。しばらくして自動で再試行します。");
+      setTimeout(()=>{ hideStatus(); started = false; startSlideshow(); }, 60000);
+    }
+  }
+
+  // ---------------- キャプション ----------------
+  function formatShotDate(d, isExif){
+    const base = d.toLocaleDateString("ja-JP", {year:"numeric", month:"long", day:"numeric"});
+    return isExif ? base : base + "頃";
+  }
+  function updateCaption(meta){
+    els.caption.classList.remove("visible");
+    setTimeout(()=>{
+      const label = formatShotDate(meta.date, meta.dateIsExif);
+      els.capDate.textContent = label;
+      els.capPlace.textContent = "";
+      els.caption.classList.add("visible");
+      if(cfg.geo && meta.lat !== null && meta.lng !== null){
+        reverseGeocode(meta.lat, meta.lng).then(place=>{
+          if(els.capDate.textContent === label && place) els.capPlace.textContent = place;
+        }).catch(()=>{});
+      }
+    }, 250);
+  }
+
+  function geoCacheKey(lat,lng){
+    return "photoframe.geo." + lat.toFixed(3) + "," + lng.toFixed(3);
+  }
+  async function reverseGeocode(lat, lng){
+    const key = geoCacheKey(lat,lng);
+    const cached = localStorage.getItem(key);
+    if(cached !== null) return cached;
+
+    const gap = Date.now() - lastGeoAt;
+    if(gap < GEO_MIN_GAP_MS) await new Promise(r=>setTimeout(r, GEO_MIN_GAP_MS - gap));
+    lastGeoAt = Date.now();
+
+    const url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=13" +
+                "&accept-language=ja&lat=" + lat + "&lon=" + lng;
+    const res = await fetch(url, {headers:{"Accept":"application/json"}});
+    if(!res.ok) throw new Error("geo_" + res.status);
+    const data = await res.json();
+    const a = data.address || {};
+    const locality = a.city || a.town || a.village || a.suburb || a.county || "";
+    const region = a.state || a.province || "";
+    const country = a.country || "";
+    let parts = (country && country !== "日本")
+      ? [locality, country].filter(Boolean)
+      : [region, locality].filter(Boolean);
+    parts = parts.filter((v,i,arr)=>arr.indexOf(v)===i);
+    const label = parts.join(" ");
+    try{ localStorage.setItem(key, label); }catch(e){}
+    return label;
+  }
+
+  // ---------------- ステータス・時計・UI ----------------
+  function showStatus(text, actionLabel, actionFn){
+    els.statusText.textContent = text;
+    if(actionLabel && actionFn){
+      els.statusAction.style.display = "inline-block";
+      els.statusAction.textContent = actionLabel;
+      els.statusAction.onclick = actionFn;
+    }else{
+      els.statusAction.style.display = "none";
+    }
+    els.statusMsg.style.display = "flex";
+  }
+  function hideStatus(){ els.statusMsg.style.display = "none"; }
+
+  function updateClock(){
+    const now = new Date();
+    els.clockTime.textContent = now.toLocaleTimeString("ja-JP", {hour:"2-digit", minute:"2-digit"});
+    els.clockDate.textContent = now.toLocaleDateString("ja-JP", {month:"long", day:"numeric", weekday:"short"});
+  }
+
+  function setupIdleControls(){
+    document.addEventListener("pointerdown", ()=>{
+      if(document.documentElement.requestFullscreen && !document.fullscreenElement){
+        document.documentElement.requestFullscreen().catch(()=>{});
+      }
+      revealGear();
+    });
+    els.gear.addEventListener("click", openSettings);
+  }
+  function revealGear(){
+    els.gear.classList.add("show");
+    clearTimeout(idleHideTimer);
+    idleHideTimer = setTimeout(()=>els.gear.classList.remove("show"), 4000);
+  }
+
+  function wireSegments(){
+    document.querySelectorAll(".seg").forEach(seg=>{
+      seg.addEventListener("click", e=>{
+        const btn = e.target.closest("button[data-order]");
+        if(!btn) return;
+        seg.querySelectorAll("button").forEach(b=>b.classList.remove("on"));
+        btn.classList.add("on");
+      });
+    });
+  }
+  function readSeg(id){
+    const on = document.querySelector("#" + id + " button.on");
+    return on ? on.dataset.order : null;
+  }
+  function writeSeg(id, val){
+    document.querySelectorAll("#" + id + " button").forEach(b=>{
+      b.classList.toggle("on", b.dataset.order === String(val));
+    });
+  }
+
+  document.getElementById("setupSave").addEventListener("click", ()=>{
+    const clientId = document.getElementById("inClientId").value.trim();
+    const folderId = document.getElementById("inFolderId").value.trim();
+    const interval = parseInt(document.getElementById("inInterval").value, 10) || 12;
+    const order = readSeg("inOrderSeg") || "chrono";
+    const size = parseInt(readSeg("inSizeSeg"), 10) || 1600;
+    const geo = document.getElementById("inGeo").checked;
+    const blur = document.getElementById("inBlur").checked;
+    if(!clientId || !folderId) return;
+    saveConfig({clientId, folderId, interval, order, size, geo, blur});
+    els.setup.classList.add("hidden");
+    waitForGIS(initAuth);
+  });
+
+  function openSettings(){
+    document.getElementById("setClientId").value = cfg.clientId || "";
+    document.getElementById("setFolderId").value = cfg.folderId || "";
+    document.getElementById("setInterval").value = cfg.interval || 12;
+    document.getElementById("setGeo").checked = !!cfg.geo;
+    document.getElementById("setBlur").checked = !!cfg.blur;
+    writeSeg("setOrderSeg", cfg.order || "chrono");
+    writeSeg("setSizeSeg", cfg.size || 1600);
+    els.settings.classList.remove("hidden");
+  }
+  document.getElementById("settingsClose").addEventListener("click", ()=>{
+    els.settings.classList.add("hidden");
+  });
+  document.getElementById("settingsSave").addEventListener("click", ()=>{
+    const clientId = document.getElementById("setClientId").value.trim();
+    const folderId = document.getElementById("setFolderId").value.trim();
+    const interval = parseInt(document.getElementById("setInterval").value, 10) || 12;
+    const order = readSeg("setOrderSeg") || "chrono";
+    const size = parseInt(readSeg("setSizeSeg"), 10) || 1600;
+    const geo = document.getElementById("setGeo").checked;
+    const blur = document.getElementById("setBlur").checked;
+    const needsReload = (clientId !== cfg.clientId) || (folderId !== cfg.folderId) || (order !== cfg.order);
+    saveConfig({clientId, folderId, interval, order, size, geo, blur});
+    els.settings.classList.add("hidden");
+    if(needsReload) location.reload();
+  });
+  document.getElementById("settingsRestart").addEventListener("click", ()=>{
+    localStorage.removeItem("photoframe.lastId");
+    location.reload();
+  });
+  document.getElementById("settingsSignout").addEventListener("click", ()=>{
+    if(accessToken && window.google && google.accounts && google.accounts.oauth2){
+      google.accounts.oauth2.revoke(accessToken, ()=>location.reload());
+    }else{
+      location.reload();
+    }
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>
