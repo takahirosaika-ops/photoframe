@@ -205,9 +205,9 @@
 <div class="screen" id="setupScreen">
   <div class="card">
     <h1>フォトフレームを設定</h1>
-    <p>この端末に保存した写真フォルダを、撮影日順にスライドショー表示します。あとから同じフォルダを選び直すと、新しく増えた写真だけを自動で追加します。外部への通信は撮影場所の地名表示のみで、写真そのものは一切送信されません。</p>
-    <label>写真フォルダを選ぶ</label>
-    <input type="file" id="inFiles" accept="image/*" multiple webkitdirectory>
+    <p>この端末に保存した写真を、撮影日順にスライドショー表示します。写真アプリの画面で目的のフォルダを開き、中の写真を「すべて選択」してから読み込むと、フォルダ単位に近い形で楽に選べます。同じ写真をあとで選び直しても、新しく増えた分だけを自動で追加します。外部への通信は撮影場所の地名表示のみで、写真そのものは一切送信されません。</p>
+    <label>写真を選ぶ(複数選択できます)</label>
+    <input type="file" id="inFiles" accept="image/*" multiple>
     <div class="small" id="inFilesCount" style="margin-top:6px;"></div>
     <label>1枚あたりの表示秒数</label>
     <input type="number" id="inInterval" value="12" min="3">
@@ -261,8 +261,8 @@
   <div class="card">
     <h1>設定</h1>
     <label>写真を追加する</label>
-    <input type="file" id="setFiles" accept="image/*" multiple webkitdirectory style="display:none;">
-    <button class="ghost" id="addFilesBtn" type="button" style="width:100%;">写真フォルダを選んで同期する</button>
+    <input type="file" id="setFiles" accept="image/*" multiple style="display:none;">
+    <button class="ghost" id="addFilesBtn" type="button" style="width:100%;">写真を選んで同期する</button>
     <div class="small" id="storageInfo" style="margin-top:8px;"></div>
     <label>1枚あたりの表示秒数</label>
     <input type="number" id="setInterval" min="3">
