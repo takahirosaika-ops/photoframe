@@ -148,6 +148,9 @@
     border:1px solid var(--panel-line);color:var(--ink);
     font-size:14px;border-radius:2px;
   }
+  .card input[type=file]{
+    width:100%;color:var(--ink-dim);font-size:12px;margin-top:2px;
+  }
   .card input:focus{outline:none;border-color:var(--frame);}
   .check-row{display:flex;align-items:center;gap:9px;margin:14px 0 0;color:var(--ink-dim);font-size:13px;}
   .check-row input{width:17px;height:17px;accent-color:var(--frame);}
@@ -202,11 +205,10 @@
 <div class="screen" id="setupScreen">
   <div class="card">
     <h1>フォトフレームを設定</h1>
-    <p>Googleドライブのフォルダから写真を読み込み、撮影日順に表示します。画像は自動で縮小して受け取るので、古い端末でも落ちにくい作りです。</p>
-    <label>Google OAuth クライアントID</label>
-    <input type="text" id="inClientId" placeholder="xxxxxxxx.apps.googleusercontent.com">
-    <label>写真フォルダのID</label>
-    <input type="text" id="inFolderId" placeholder="DriveフォルダURLの末尾の文字列">
+    <p>この端末に保存した写真フォルダを、撮影日順にスライドショー表示します。あとから同じフォルダを選び直すと、新しく増えた写真だけを自動で追加します。外部への通信は撮影場所の地名表示のみで、写真そのものは一切送信されません。</p>
+    <label>写真フォルダを選ぶ</label>
+    <input type="file" id="inFiles" accept="image/*" multiple webkitdirectory>
+    <div class="small" id="inFilesCount" style="margin-top:6px;"></div>
     <label>1枚あたりの表示秒数</label>
     <input type="number" id="inInterval" value="12" min="3">
     <label>並び順</label>
@@ -251,17 +253,17 @@
     <div class="btn-row">
       <button class="primary" id="setupSave">保存してはじめる</button>
     </div>
-    <div class="small">設定内容はこの端末のブラウザ内にのみ保存されます。</div>
+    <div class="small">写真はこの端末の中だけに保存されます。設定内容もこの端末のブラウザ内にのみ保存されます。</div>
   </div>
 </div>
 
 <div class="screen hidden" id="settingsScreen">
   <div class="card">
     <h1>設定</h1>
-    <label>Google OAuth クライアントID</label>
-    <input type="text" id="setClientId">
-    <label>写真フォルダのID</label>
-    <input type="text" id="setFolderId">
+    <label>写真を追加する</label>
+    <input type="file" id="setFiles" accept="image/*" multiple webkitdirectory style="display:none;">
+    <button class="ghost" id="addFilesBtn" type="button" style="width:100%;">写真フォルダを選んで同期する</button>
+    <div class="small" id="storageInfo" style="margin-top:8px;"></div>
     <label>1枚あたりの表示秒数</label>
     <input type="number" id="setInterval" min="3">
     <label>並び順</label>
@@ -309,36 +311,35 @@
     </div>
     <div class="btn-row">
       <button class="ghost" id="settingsRestart">先頭から見直す</button>
-      <button class="danger" id="settingsSignout">サインアウト</button>
+      <button class="danger" id="settingsClearAll">すべての写真を削除</button>
     </div>
   </div>
 </div>
 
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 (function(){
   "use strict";
 
-  const SCOPE = "https://www.googleapis.com/auth/drive.readonly";
-  const SILENT_REFRESH_MS = 45 * 60 * 1000;
-  const FOLDER_RESCAN_MS  = 20 * 60 * 1000;
-  const RELOAD_HOURS_MS   = 6 * 60 * 60 * 1000;  // 長時間放置でのメモリ肥大対策
+  const RELOAD_HOURS_MS = 6 * 60 * 60 * 1000;  // 長時間放置でのメモリ肥大対策
   const TRANSITION_MS = 1200;
   const GEO_MIN_GAP_MS = 1500;
+  const DB_NAME = "photoframeDB";
+  const DB_VERSION = 1;
 
   let cfg = loadConfig();
-  let tokenClient = null;
-  let accessToken = null;
   let photos = [];
   let queue = [];
   let cursor = -1;          // 現在表示中の写真の queue 内インデックス
   let paused = false;
   let currentLayer = "A";
+  let layerUrls = {A:null, B:null};   // 各レイヤーに割り当て中の Object URL(解放用)
   let nextTimer = null;
   let idleHideTimer = null;
   let lastGeoAt = 0;
   let started = false;
   let preloader = null;
+  let preloaderUrl = null;
+  let pendingFiles = [];
   let touchStartX = 0, touchStartY = 0, touchStartT = 0;
 
   const els = {
@@ -358,6 +359,7 @@
     capPlace: document.getElementById("capPlace"),
   };
 
+  // ==================== 設定の保存 ====================
   function loadConfig(){
     try{
       const c = JSON.parse(localStorage.getItem("photoframe.config") || "null") || {};
@@ -384,7 +386,6 @@
   function applyBlurMode(){
     document.body.classList.toggle("blur-on", !!cfg.blur);
   }
-  function hasConfig(){ return !!(cfg.clientId && cfg.folderId); }
 
   function savePosition(){
     if(cfg.order !== "chrono") return;
@@ -400,7 +401,8 @@
     if(idx >= 0) cursor = idx - 1;   // 直後の goTo(cursor+1) で idx から再開する
   }
 
-  function boot(){
+  // ==================== 起動 ====================
+  async function boot(){
     applyBlurMode();
     applyNightDim();
     setInterval(applyNightDim, 60000);
@@ -412,12 +414,20 @@
     setupKeepAliveVideo();
     setTimeout(()=>location.reload(), RELOAD_HOURS_MS);
 
-    if(!hasConfig()){
+    let count = 0;
+    try{ count = await dbCount(); }catch(e){}
+
+    // 空き容量逼迫時にブラウザが保存データを勝手に消すのを防ぐ
+    if(navigator.storage && navigator.storage.persist){
+      navigator.storage.persist().catch(()=>{});
+    }
+
+    if(count === 0){
       els.setup.classList.remove("hidden");
       return;
     }
     els.setup.classList.add("hidden");
-    waitForGIS(initAuth);
+    initSlideshow();
   }
 
   // 夜間の減光。日をまたぐ指定(22時→6時)にも対応する
@@ -431,30 +441,24 @@
     el.style.opacity = inNight ? (cfg.nightLevel || 0.6) : 0;
   }
 
-  // 画面が暗くなる/スリープするのを防ぐ。
-  // ①Wake Lock API ②動画再生による保持 の二段構えにする。
-  // (古いFire OSのSilkはWake Lock未対応のことがあり、その場合は②が効く)
+  // 画面が暗くなる/スリープするのを防ぐ。①Wake Lock API ②動画再生 の二段構え
   let wakeLock = null;
   async function acquireWakeLock(){
     if(!("wakeLock" in navigator)) return;
     if(wakeLock) return;
     try{
       wakeLock = await navigator.wakeLock.request("screen");
-      // OS側に解放されたら再取得できるよう、必ずnullに戻す
       wakeLock.addEventListener("release", ()=>{ wakeLock = null; });
     }catch(e){ wakeLock = null; }
   }
   async function setupWakeLock(){
     acquireWakeLock();
-    // 解放されっぱなしにならないよう定期的に取り直す
     setInterval(acquireWakeLock, 60000);
     document.addEventListener("visibilitychange", ()=>{
       if(document.visibilityState === "visible") acquireWakeLock();
     });
   }
 
-  // フォールバック：極小の動画を無音ループ再生する。
-  // ブラウザは「動画再生中」の間は画面を明るく保つため、輝度低下も防げる。
   let keepAliveVideo = null;
   function setupKeepAliveVideo(){
     if(keepAliveVideo) return;
@@ -462,21 +466,15 @@
       const canvas = document.createElement("canvas");
       canvas.width = 4; canvas.height = 4;
       const ctx = canvas.getContext("2d");
-      const paint = ()=>{
-        ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, 4, 4);
-      };
+      const paint = ()=>{ ctx.fillStyle = "#000"; ctx.fillRect(0,0,4,4); };
       paint();
       if(!canvas.captureStream) return;
       const stream = canvas.captureStream(5);
-      setInterval(paint, 1000);   // 映像が途切れると再生が止まるため描き続ける
+      setInterval(paint, 1000);
 
       const v = document.createElement("video");
-      v.muted = true;
-      v.defaultMuted = true;
-      v.loop = true;
-      v.setAttribute("playsinline", "");
-      v.setAttribute("muted", "");
+      v.muted = true; v.defaultMuted = true; v.loop = true;
+      v.setAttribute("playsinline",""); v.setAttribute("muted","");
       v.style.cssText = "position:fixed;left:0;bottom:0;width:6px;height:6px;" +
                         "opacity:0.02;pointer-events:none;z-index:1;";
       v.srcObject = stream;
@@ -484,76 +482,181 @@
       const p = v.play();
       if(p && p.catch) p.catch(()=>{});
       keepAliveVideo = v;
-    }catch(e){ /* 非対応環境では何もしない */ }
+    }catch(e){}
   }
 
-  function waitForGIS(cb){
-    if(window.google && google.accounts && google.accounts.oauth2){ cb(); }
-    else{ setTimeout(()=>waitForGIS(cb), 150); }
+  // ==================== IndexedDB ====================
+  function openDB(){
+    return new Promise((resolve,reject)=>{
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = ()=>{
+        const db = req.result;
+        if(!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", {keyPath:"id"});
+        if(!db.objectStoreNames.contains("blobs")) db.createObjectStore("blobs", {keyPath:"id"});
+      };
+      req.onsuccess = ()=>resolve(req.result);
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  async function dbAddPhoto(meta, blob){
+    const db = await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(["meta","blobs"], "readwrite");
+      tx.objectStore("meta").put(meta);
+      tx.objectStore("blobs").put({id: meta.id, blob});
+      tx.oncomplete = ()=>resolve();
+      tx.onerror = ()=>reject(tx.error);
+    });
+  }
+  async function dbGetAllMeta(){
+    const db = await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction("meta","readonly");
+      const req = tx.objectStore("meta").getAll();
+      req.onsuccess = ()=>resolve(req.result || []);
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  async function dbGetBlob(id){
+    const db = await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction("blobs","readonly");
+      const req = tx.objectStore("blobs").get(id);
+      req.onsuccess = ()=>resolve(req.result ? req.result.blob : null);
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  async function dbClearAll(){
+    const db = await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(["meta","blobs"], "readwrite");
+      tx.objectStore("meta").clear();
+      tx.objectStore("blobs").clear();
+      tx.oncomplete = ()=>resolve();
+      tx.onerror = ()=>reject(tx.error);
+    });
+  }
+  async function dbCount(){
+    const db = await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction("meta","readonly");
+      const req = tx.objectStore("meta").count();
+      req.onsuccess = ()=>resolve(req.result);
+      req.onerror = ()=>reject(req.error);
+    });
   }
 
-  function initAuth(){
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: cfg.clientId,
-      scope: SCOPE,
-      callback: (resp)=>{
-        if(resp && resp.access_token){
-          accessToken = resp.access_token;
-          hideStatus();
-          startSlideshow();
+  // ==================== EXIF(撮影日・位置情報・向き)の解析 ====================
+  // JPEGのAPP1セグメントからExif/TIFFを読む。非JPEGやExif無しはnullを返す。
+  function readExif(arrayBuffer){
+    try{
+      const view = new DataView(arrayBuffer);
+      if(view.getUint16(0) !== 0xFFD8) return null;
+      let offset = 2;
+      const len = view.byteLength;
+      while(offset < len - 4){
+        const marker = view.getUint16(offset);
+        if(marker === 0xFFE1){
+          if(view.getUint32(offset+4) === 0x45786966 /* 'Exif' */){
+            return parseTiff(view, offset+10);
+          }
+          return null;
+        }else if((marker & 0xFF00) !== 0xFF00){
+          break;
         }else{
-          showStatus("Googleへのサインインに失敗しました。", "もう一度試す", ()=>requestToken(""));
-        }
-      },
-      error_callback: ()=>{
-        // スライドショーが既に始まっている場合、裏側の自動更新失敗ごとに
-        // 写真の上へ通知を出すと表示の邪魔になるため出さない。
-        // 手元の写真は表示され続け、次回の自動更新(または手動操作)で回復する。
-        if(!started){
-          showStatus("サインインが必要です。", "サインインする", ()=>requestToken(""));
-        }else{
-          // 通常の45分待ちより早めに、5分後に静かに再試行する
-          setTimeout(()=>requestToken(""), 5 * 60 * 1000);
+          offset += 2 + view.getUint16(offset+2);
         }
       }
-    });
-    requestToken("");
-    setInterval(()=>requestToken(""), SILENT_REFRESH_MS);
-  }
-  function requestToken(prompt){
-    try{ tokenClient.requestAccessToken({prompt: prompt}); }catch(e){}
+    }catch(e){}
+    return null;
   }
 
-  // ---------------- Drive ----------------
-  async function fetchAllFiles(){
-    const q = encodeURIComponent(
-      "'" + cfg.folderId + "' in parents and mimeType contains 'image/' and trashed = false"
-    );
-    const fields = encodeURIComponent(
-      "nextPageToken,files(id,name,createdTime,modifiedTime,thumbnailLink,hasThumbnail," +
-      "imageMediaMetadata(time,location))"
-    );
-    let all = [];
-    let pageToken = "";
-    do{
-      let url = "https://www.googleapis.com/drive/v3/files?q=" + q +
-                "&fields=" + fields + "&pageSize=1000";
-      if(pageToken) url += "&pageToken=" + encodeURIComponent(pageToken);
-      const res = await fetch(url, { headers:{ Authorization: "Bearer " + accessToken }});
-      if(!res.ok) throw new Error("drive_list_" + res.status);
-      const data = await res.json();
-      all = all.concat(data.files || []);
-      pageToken = data.nextPageToken || "";
-    } while(pageToken);
-    return all;
+  function parseTiff(view, tiffStart){
+    const little = view.getUint16(tiffStart, true) === 0x4949;
+    const get32 = (o)=> view.getUint32(o, little);
+    const firstIFDOffset = get32(tiffStart + 4);
+    const ifd0 = readIFD(view, tiffStart, tiffStart + firstIFDOffset, little);
+
+    let dateStr = ifd0.tags[0x0132] || null;
+    const orientation = ifd0.tags[0x0112] || 1;
+
+    if(ifd0.tags[0x8769] !== undefined){
+      const exifIFD = readIFD(view, tiffStart, tiffStart + ifd0.tags[0x8769], little);
+      if(exifIFD.tags[0x9003]) dateStr = exifIFD.tags[0x9003];
+    }
+
+    let lat = null, lng = null;
+    if(ifd0.tags[0x8825] !== undefined){
+      const gps = readIFD(view, tiffStart, tiffStart + ifd0.tags[0x8825], little);
+      const latVal = gps.tags[2], latRef = gps.tags[1];
+      const lngVal = gps.tags[4], lngRef = gps.tags[3];
+      if(Array.isArray(latVal) && Array.isArray(lngVal)){
+        lat = dmsToDeg(latVal) * (latRef === "S" ? -1 : 1);
+        lng = dmsToDeg(lngVal) * (lngRef === "W" ? -1 : 1);
+      }
+    }
+
+    return {
+      date: dateStr ? parseExifTime(dateStr) : null,
+      lat, lng, orientation
+    };
   }
 
-  // 縮小画像のURLを組み立てる。原寸を端末に読ませないのが要点。
-  function sizedUrl(photo){
-    if(!photo.thumb) return null;
-    return photo.thumb.replace(/=s\d+(-[a-z]+)?$/i, "=s" + (cfg.size || 1600));
+  function readIFD(view, tiffStart, ifdOffset, little){
+    const count = view.getUint16(ifdOffset, little);
+    const tags = {};
+    for(let i=0;i<count;i++){
+      const entryOffset = ifdOffset + 2 + i*12;
+      const tag = view.getUint16(entryOffset, little);
+      const type = view.getUint16(entryOffset+2, little);
+      const numValues = view.getUint32(entryOffset+4, little);
+      tags[tag] = readTagValue(view, tiffStart, entryOffset+8, type, numValues, little);
+    }
+    return {tags};
   }
 
+  function typeSize(type){
+    return {1:1,2:1,3:2,4:4,5:8,7:1,9:4,10:8}[type] || 1;
+  }
+
+  function readTagValue(view, tiffStart, fieldOffset, type, count, little){
+    const size = typeSize(type) * count;
+    const dataOffset = size <= 4 ? fieldOffset : tiffStart + view.getUint32(fieldOffset, little);
+    try{
+      if(type === 2){ // ASCII
+        let s = "";
+        for(let i=0;i<count-1;i++) s += String.fromCharCode(view.getUint8(dataOffset+i));
+        return s;
+      }
+      if(type === 3){ // SHORT
+        const arr = [];
+        for(let i=0;i<count;i++) arr.push(view.getUint16(dataOffset+i*2, little));
+        return count===1 ? arr[0] : arr;
+      }
+      if(type === 4){ // LONG
+        const arr = [];
+        for(let i=0;i<count;i++) arr.push(view.getUint32(dataOffset+i*4, little));
+        return count===1 ? arr[0] : arr;
+      }
+      if(type === 5){ // RATIONAL
+        const arr = [];
+        for(let i=0;i<count;i++){
+          const num = view.getUint32(dataOffset+i*8, little);
+          const den = view.getUint32(dataOffset+i*8+4, little);
+          arr.push(den === 0 ? 0 : num/den);
+        }
+        return arr;   // GPS用途は常に配列のまま扱う
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function dmsToDeg(dms){
+    if(!Array.isArray(dms)) return null;
+    return (dms[0]||0) + (dms[1]||0)/60 + (dms[2]||0)/3600;
+  }
+
+  // EXIFの "YYYY:MM:DD HH:MM:SS" を Date に
   function parseExifTime(s){
     if(!s) return null;
     const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
@@ -562,23 +665,117 @@
     return isNaN(d.getTime()) ? null : d;
   }
 
-  function normalize(files){
-    return files.filter(f => f.hasThumbnail !== false && f.thumbnailLink)
-      .map(f => {
-        const meta = f.imageMediaMetadata || {};
-        const exif = parseExifTime(meta.time);
-        const fallback = new Date(f.createdTime || f.modifiedTime || 0);
-        const loc = meta.location;
-        return {
-          id: f.id,
-          name: f.name,
-          thumb: f.thumbnailLink,
-          date: exif || fallback,
-          dateIsExif: !!exif,
-          lat: loc && typeof loc.latitude === "number" ? loc.latitude : null,
-          lng: loc && typeof loc.longitude === "number" ? loc.longitude : null,
-        };
-      }).sort((a,b) => a.date - b.date);
+  // ==================== 写真の取り込み(縮小して保存) ====================
+  async function createImageBitmapSafe(file){
+    if(window.createImageBitmap){
+      try{ return await createImageBitmap(file, {imageOrientation:"none"}); }catch(e){}
+    }
+    return await new Promise((resolve,reject)=>{
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = ()=>{ URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = reject;
+      img.src = url;
+    });
+  }
+
+  function applyOrientationTransform(ctx, orientation, w, h){
+    switch(orientation){
+      case 2: ctx.transform(-1,0,0,1,w,0); break;
+      case 3: ctx.transform(-1,0,0,-1,w,h); break;
+      case 4: ctx.transform(1,0,0,-1,0,h); break;
+      case 5: ctx.transform(0,1,1,0,0,0); break;
+      case 6: ctx.transform(0,1,-1,0,h,0); break;
+      case 7: ctx.transform(0,-1,-1,0,h,w); break;
+      case 8: ctx.transform(0,-1,1,0,0,w); break;
+      default: break;
+    }
+  }
+
+  async function resizeToBlob(file, maxDim, orientation){
+    const src = await createImageBitmapSafe(file);
+    const srcW = src.width, srcH = src.height;
+    const scale = Math.min(1, maxDim / Math.max(srcW, srcH));
+    const dW = Math.max(1, Math.round(srcW*scale)), dH = Math.max(1, Math.round(srcH*scale));
+    const swapped = orientation >= 5 && orientation <= 8;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = swapped ? dH : dW;
+    canvas.height = swapped ? dW : dH;
+    const ctx = canvas.getContext("2d");
+    applyOrientationTransform(ctx, orientation, dW, dH);
+    ctx.drawImage(src, 0, 0, dW, dH);
+    if(src.close) src.close();
+
+    return await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.85));
+  }
+
+  async function importFiles(fileList){
+    const files = Array.from(fileList || []).filter(f =>
+      f.type.indexOf("image/") === 0 || /\.(jpe?g|png|gif|webp|bmp)$/i.test(f.name)
+    );
+    if(files.length === 0) return;
+
+    showStatus("写真を確認中…");
+    let existing = [];
+    try{ existing = await dbGetAllMeta(); }catch(e){}
+    const known = new Set(existing.map(m => m.fp).filter(Boolean));
+
+    let done = 0, added = 0, skipped = 0;
+    for(const file of files){
+      const fp = file.name + "|" + file.size + "|" + file.lastModified;
+      done++;
+      if(known.has(fp)){
+        skipped++;
+        showStatus("写真を読み込み中… " + done + "/" + files.length +
+                    (skipped ? "(重複" + skipped + "件はスキップ)" : ""));
+        continue;
+      }
+      try{
+        const buf = await file.arrayBuffer();
+        const exif = readExif(buf);
+        const orientation = (exif && exif.orientation) || 1;
+        const blob = await resizeToBlob(file, cfg.size || 1600, orientation);
+        const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+                  : ("id" + Date.now() + Math.random().toString(16).slice(2));
+        const dateVal = (exif && exif.date) ? exif.date.getTime() : file.lastModified;
+        await dbAddPhoto({
+          id, date: dateVal,
+          dateIsExif: !!(exif && exif.date),
+          lat: (exif && typeof exif.lat === "number") ? exif.lat : null,
+          lng: (exif && typeof exif.lng === "number") ? exif.lng : null,
+          fp,
+        }, blob);
+        known.add(fp);
+        added++;
+      }catch(e){ /* 1枚失敗しても続行する */ }
+      showStatus("写真を読み込み中… " + done + "/" + files.length +
+                  (skipped ? "(重複" + skipped + "件はスキップ)" : ""));
+    }
+    hideStatus();
+    return {added, skipped};
+  }
+
+  async function loadPhotosFromDB(){
+    const raw = await dbGetAllMeta();
+    return raw.map(r => ({
+      id: r.id, date: new Date(r.date), dateIsExif: r.dateIsExif,
+      lat: r.lat, lng: r.lng
+    })).sort((a,b) => a.date - b.date);
+  }
+
+  async function refreshPhotosFromDB(){
+    const list = await loadPhotosFromDB();
+    if(list.length === 0) return;
+    const curId = (photos[queue[cursor]] || {}).id;
+    photos = list;
+    if(cfg.order === "shuffle"){
+      buildQueue();
+    }else{
+      queue = photos.map((_,i)=>i);
+      const idx = photos.findIndex(p=>p.id === curId);
+      cursor = idx >= 0 ? idx : Math.min(cursor, photos.length-1);
+    }
   }
 
   function shuffle(arr){
@@ -595,44 +792,21 @@
     cursor = -1;
   }
 
-  // ---------------- スライドショー ----------------
-  async function startSlideshow(){
+  // ==================== スライドショー ====================
+  async function initSlideshow(){
     if(started) return;
-    let files;
-    try{ files = await fetchAllFiles(); }
-    catch(e){ return handleFetchError(e); }
-
-    const list = normalize(files);
+    const list = await loadPhotosFromDB();
     if(list.length === 0){
-      return showStatus("表示できる写真が見つかりませんでした。", "再確認する",
-        ()=>{hideStatus(); started=false; startSlideshow();});
+      return showStatus("写真がまだ登録されていません。", "写真を追加する", ()=>{ hideStatus(); openSettings(); });
     }
     started = true;
     photos = list;
     buildQueue();
     restorePosition();
     goTo(cursor + 1);
-    setInterval(rescanFolder, FOLDER_RESCAN_MS);
   }
 
-  async function rescanFolder(){
-    try{
-      const fresh = normalize(await fetchAllFiles());
-      if(fresh.length === 0) return;
-      const curId = (photos[queue[cursor]] || {}).id;
-      photos = fresh;
-      if(cfg.order === "shuffle"){
-        buildQueue();   // cursor は -1 に戻る(次の送りから新しい並びになる)
-      }else{
-        queue = photos.map((_,i)=>i);
-        const idx = photos.findIndex(p=>p.id === curId);
-        cursor = idx >= 0 ? idx : Math.min(cursor, photos.length - 1);
-      }
-    }catch(e){}
-  }
-
-  // 指定位置(queue内インデックス)の写真を表示する。範囲外は端で折り返す。
-  function goTo(pos){
+  async function goTo(pos){
     if(queue.length === 0) return;
     if(pos < 0){
       pos = queue.length - 1;
@@ -646,18 +820,20 @@
     const index = queue[cursor];
     const meta = photos[index];
     if(!meta) return;
-    const url = sizedUrl(meta);
 
     savePosition();
     scheduleAuto();
 
-    if(!url) return;
-    // 読み込み完了してから差し替える(黒画面のちらつき防止)
-    const img = new Image();
-    img.decoding = "async";
-    img.onload = ()=>{ render(url, meta); preloadAdjacent(); };
-    img.onerror = ()=>{ preloadAdjacent(); };  // 1枚失敗しても止めない
-    img.src = url;
+    try{
+      const blob = await dbGetBlob(meta.id);
+      if(!blob) return;
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = ()=>{ render(url, meta); preloadAdjacent(); };
+      img.onerror = ()=>{ URL.revokeObjectURL(url); };
+      img.src = url;
+    }catch(e){ /* このコマは飛ばして次回に任せる */ }
   }
 
   function scheduleAuto(){
@@ -677,16 +853,21 @@
     revealControls();
   }
 
-  function preloadAdjacent(){
+  async function preloadAdjacent(){
     let pos = cursor + 1;
     if(pos >= queue.length) pos = 0;
     const nIndex = queue[pos];
     if(nIndex === undefined) return;
-    const url = sizedUrl(photos[nIndex]);
-    if(!url) return;
-    preloader = new Image();       // 1枚だけ保持。参照を上書きして解放を促す
-    preloader.decoding = "async";
-    preloader.src = url;
+    const meta = photos[nIndex];
+    try{
+      const blob = await dbGetBlob(meta.id);
+      if(!blob) return;
+      if(preloaderUrl) URL.revokeObjectURL(preloaderUrl);
+      preloaderUrl = URL.createObjectURL(blob);
+      preloader = new Image();
+      preloader.decoding = "async";
+      preloader.src = preloaderUrl;
+    }catch(e){}
   }
 
   function render(url, meta){
@@ -702,27 +883,20 @@
     incoming.classList.add("visible");
     showing.classList.remove("visible");
 
-    // 隠れた側の画像参照を捨ててメモリを戻す
+    const oldUrl = layerUrls[currentLayer];
+    layerUrls[otherLayer] = url;
+
     setTimeout(()=>{
       showing.querySelector(".fg").style.backgroundImage = "";
       showing.querySelector(".bg").style.backgroundImage = "";
+      if(oldUrl) URL.revokeObjectURL(oldUrl);
     }, TRANSITION_MS + 200);
 
     currentLayer = otherLayer;
     updateCaption(meta);
   }
 
-  function handleFetchError(e){
-    const msg = String((e && e.message) || e);
-    if(msg.indexOf("401") !== -1 || msg.indexOf("403") !== -1){
-      showStatus("Googleの認証が切れました。", "サインインし直す", ()=>{ hideStatus(); requestToken(""); });
-    }else{
-      showStatus("読み込みに失敗しました。しばらくして自動で再試行します。");
-      setTimeout(()=>{ hideStatus(); started = false; startSlideshow(); }, 60000);
-    }
-  }
-
-  // ---------------- キャプション ----------------
+  // ==================== キャプション(撮影日・場所) ====================
   function formatShotDate(d, isExif){
     const base = d.toLocaleDateString("ja-JP", {year:"numeric", month:"long", day:"numeric"});
     return isExif ? base : base + "頃";
@@ -772,7 +946,7 @@
     return label;
   }
 
-  // ---------------- ステータス・時計・UI ----------------
+  // ==================== ステータス・時計・UI ====================
   function showStatus(text, actionLabel, actionFn){
     els.statusText.textContent = text;
     if(actionLabel && actionFn){
@@ -794,7 +968,6 @@
 
   function setupIdleControls(){
     const fsHint = document.getElementById("fsHint");
-    // 既にホーム画面から起動していて(standalone表示)アドレスバーが無い場合はヒント不要
     const alreadyStandalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
     if(alreadyStandalone && fsHint) fsHint.classList.add("hidden");
 
@@ -804,7 +977,6 @@
         document.documentElement.requestFullscreen().catch(()=>{});
       }
       if(fsHint) fsHint.classList.add("hidden");
-      // 自動再生が制限される環境でも、タップ後なら確実に開始できる
       setupKeepAliveVideo();
       acquireWakeLock();
       revealControls();
@@ -854,10 +1026,20 @@
       b.classList.toggle("on", b.dataset.order === String(val));
     });
   }
+  function clampHour(v, fallback){
+    const n = parseInt(v, 10);
+    if(isNaN(n) || n < 0 || n > 23) return fallback;
+    return n;
+  }
 
-  document.getElementById("setupSave").addEventListener("click", ()=>{
-    const clientId = document.getElementById("inClientId").value.trim();
-    const folderId = document.getElementById("inFolderId").value.trim();
+  // ==================== 初回セットアップ ====================
+  document.getElementById("inFiles").addEventListener("change", (e)=>{
+    pendingFiles = Array.from(e.target.files || []);
+    document.getElementById("inFilesCount").textContent =
+      pendingFiles.length ? (pendingFiles.length + "枚選択済み") : "";
+  });
+
+  document.getElementById("setupSave").addEventListener("click", async ()=>{
     const interval = parseInt(document.getElementById("inInterval").value, 10) || 12;
     const order = readSeg("inOrderSeg") || "chrono";
     const size = parseInt(readSeg("inSizeSeg"), 10) || 1600;
@@ -867,22 +1049,61 @@
     const nightStart = clampHour(document.getElementById("inNightStart").value, 22);
     const nightEnd = clampHour(document.getElementById("inNightEnd").value, 6);
     const nightLevel = parseFloat(readSeg("inNightLevelSeg")) || 0.6;
-    if(!clientId || !folderId) return;
-    saveConfig({clientId, folderId, interval, order, size, geo, blur,
-                night, nightStart, nightEnd, nightLevel});
+
+    if(pendingFiles.length === 0){
+      alert("写真を1枚以上選んでください。");
+      return;
+    }
+    saveConfig({interval, order, size, geo, blur, night, nightStart, nightEnd, nightLevel});
     els.setup.classList.add("hidden");
-    waitForGIS(initAuth);
+    const result = await importFiles(pendingFiles);
+    pendingFiles = [];
+    if(result){
+      showStatus(result.added + "枚を追加しました" + (result.skipped ? "(重複" + result.skipped + "件はスキップ)" : ""));
+      setTimeout(hideStatus, 1800);
+    }
+    initSlideshow();
   });
 
-  function clampHour(v, fallback){
-    const n = parseInt(v, 10);
-    if(isNaN(n) || n < 0 || n > 23) return fallback;
-    return n;
+  // ==================== 設定画面 ====================
+  document.getElementById("addFilesBtn").addEventListener("click", ()=>{
+    document.getElementById("setFiles").click();
+  });
+  document.getElementById("setFiles").addEventListener("change", async (e)=>{
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if(files.length === 0) return;
+    els.settings.classList.add("hidden");
+    const result = await importFiles(files);
+    await refreshPhotosFromDB();
+    if(result){
+      showStatus(result.added + "枚を追加しました" + (result.skipped ? "(重複" + result.skipped + "件はスキップ)" : ""));
+      setTimeout(hideStatus, 1800);
+    }
+    if(!started){ initSlideshow(); }
+  });
+
+  async function updateStorageInfo(){
+    const el = document.getElementById("storageInfo");
+    if(!el) return;
+    try{
+      const count = await dbCount();
+      let text = "保存済み: " + count + "枚";
+      if(navigator.storage && navigator.storage.estimate){
+        const est = await navigator.storage.estimate();
+        if(est && typeof est.usage === "number"){
+          text += "(約" + Math.round(est.usage/1024/1024) + "MB使用";
+          if(typeof est.quota === "number"){
+            text += " / 目安上限 約" + Math.round(est.quota/1024/1024) + "MB";
+          }
+          text += ")";
+        }
+      }
+      el.textContent = text;
+    }catch(e){}
   }
 
   function openSettings(){
-    document.getElementById("setClientId").value = cfg.clientId || "";
-    document.getElementById("setFolderId").value = cfg.folderId || "";
     document.getElementById("setInterval").value = cfg.interval || 12;
     document.getElementById("setGeo").checked = !!cfg.geo;
     document.getElementById("setBlur").checked = !!cfg.blur;
@@ -892,14 +1113,13 @@
     writeSeg("setNightLevelSeg", cfg.nightLevel);
     writeSeg("setOrderSeg", cfg.order || "chrono");
     writeSeg("setSizeSeg", cfg.size || 1600);
+    updateStorageInfo();
     els.settings.classList.remove("hidden");
   }
   document.getElementById("settingsClose").addEventListener("click", ()=>{
     els.settings.classList.add("hidden");
   });
   document.getElementById("settingsSave").addEventListener("click", ()=>{
-    const clientId = document.getElementById("setClientId").value.trim();
-    const folderId = document.getElementById("setFolderId").value.trim();
     const interval = parseInt(document.getElementById("setInterval").value, 10) || 12;
     const order = readSeg("setOrderSeg") || "chrono";
     const size = parseInt(readSeg("setSizeSeg"), 10) || 1600;
@@ -909,9 +1129,8 @@
     const nightStart = clampHour(document.getElementById("setNightStart").value, 22);
     const nightEnd = clampHour(document.getElementById("setNightEnd").value, 6);
     const nightLevel = parseFloat(readSeg("setNightLevelSeg")) || 0.6;
-    const needsReload = (clientId !== cfg.clientId) || (folderId !== cfg.folderId) || (order !== cfg.order);
-    saveConfig({clientId, folderId, interval, order, size, geo, blur,
-                night, nightStart, nightEnd, nightLevel});
+    const needsReload = (order !== cfg.order);
+    saveConfig({interval, order, size, geo, blur, night, nightStart, nightEnd, nightLevel});
     els.settings.classList.add("hidden");
     if(needsReload) location.reload();
   });
@@ -919,12 +1138,11 @@
     localStorage.removeItem("photoframe.lastId");
     location.reload();
   });
-  document.getElementById("settingsSignout").addEventListener("click", ()=>{
-    if(accessToken && window.google && google.accounts && google.accounts.oauth2){
-      google.accounts.oauth2.revoke(accessToken, ()=>location.reload());
-    }else{
-      location.reload();
-    }
+  document.getElementById("settingsClearAll").addEventListener("click", async ()=>{
+    if(!confirm("保存されているすべての写真を削除します。よろしいですか？")) return;
+    await dbClearAll();
+    localStorage.removeItem("photoframe.lastId");
+    location.reload();
   });
 
   boot();
