@@ -320,7 +320,7 @@
 (function(){
   "use strict";
 
-  const RELOAD_HOURS_MS = 6 * 60 * 60 * 1000;  // 長時間放置でのメモリ肥大対策
+  const RELOAD_HOUR = 4;  // 毎日この時刻(0-23時)に1回だけ再読み込みする
   const TRANSITION_MS = 1200;
   const GEO_MIN_GAP_MS = 1500;
   const DB_NAME = "photoframeDB";
@@ -412,7 +412,7 @@
     wireSegments();
     setupWakeLock();
     setupKeepAliveVideo();
-    setTimeout(()=>location.reload(), RELOAD_HOURS_MS);
+    scheduleDailyReload();
 
     let count = 0;
     try{ count = await dbCount(); }catch(e){}
@@ -439,6 +439,15 @@
     const s = cfg.nightStart, e = cfg.nightEnd;
     const inNight = (s < e) ? (h >= s && h < e) : (h >= s || h < e);
     el.style.opacity = inNight ? (cfg.nightLevel || 0.6) : 0;
+  }
+
+  // 次に迎える「毎日RELOAD_HOURの時刻」までのミリ秒を計算し、そこで1回だけ再読み込みする。
+  // 全画面表示はページ再読み込みのたびに解除されるため、頻度を1日1回(深夜)に抑える。
+  function scheduleDailyReload(){
+    const now = new Date();
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), RELOAD_HOUR, 0, 0, 0);
+    if(target <= now) target.setDate(target.getDate() + 1);
+    setTimeout(()=>location.reload(), target - now);
   }
 
   // 画面が暗くなる/スリープするのを防ぐ。①Wake Lock API ②動画再生 の二段構え
